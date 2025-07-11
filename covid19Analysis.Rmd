@@ -1,0 +1,236 @@
+---
+title: "COVID-19 Global Impact Analysis"
+output: html_document
+---
+
+# Setup
+
+Before doing any analysis, I need to load the R packages that make data cleaning and visualization easier.  The tidyverse package includes functions that help make working with data easier.  I also load the lubridate package, which is helpful for working with dates.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+library(tidyverse)
+library(lubridate)
+```
+
+Loading the libraries now ensures all the functions I need are ready to use later in the project.
+
+
+# Importing and Tidying Data
+
+In this step, I bring in the COVID-19 datasets from the Johns Hopkins University GitHub repository.  These datasets include global time series data for both confirmed cases and deaths, with one column for each date starting from January 22, 2020.  I download the data directly from the source so it always stays up to date.
+
+```{r}
+# URLs for global confirmed cases and deaths
+base_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+files <- c("time_series_covid19_confirmed_global.csv", 
+           "time_series_covid19_deaths_global.csv")
+
+global_cases <- read_csv(str_c(base_url, files[1]))
+global_deaths <- read_csv(str_c(base_url, files[2]))
+```
+Each of these files contains over a thousand columns, with each column after the first few showing the total number of cases or deaths for one specific date.  It’s hard to work with in R.  To fix this, I reshape the data into a format where each row represents one observation.
+
+
+This next code converts the data from wide format to long format using pivot_longer().  Each row now shows a specific location (country and province), a specific date, and the number of cases or deaths on that date.  After reshaping, I merge the two datasets together using a left join, so that each row has both case and death counts.  Finally, I convert the date column from character format to a proper Date type using the mdy() function from the lubridate package.  This makes it easier to group and plot the data over time in future steps.
+
+```{r}
+# Tidy both datasets (pivot to long format)
+cases_long <- global_cases %>%
+  pivot_longer(-(1:4), names_to = "date", values_to = "cases")
+
+deaths_long <- global_deaths %>%
+  pivot_longer(-(1:4), names_to = "date", values_to = "deaths")
+
+# Merge datasets
+global <- left_join(cases_long, deaths_long,
+                    by = c("Province/State", "Country/Region", "Lat", "Long", "date")) %>%
+  mutate(date = mdy(date))
+```
+
+
+Now that the data is cleaned and reshaped, I want to prepare it for country analysis.  First, I remove rows where the number of reported cases is zero.  These rows are not useful for analysis because they may reflect days before the virus arrived in a country or dates where no data was reported yet.
+
+
+
+```{r}
+# Remove rows with no cases
+global <- global %>% filter(cases > 0)
+
+# Summarize by country and date
+global_country_daily <- global %>%
+  group_by(`Country/Region`, date) %>%
+  summarise(
+    cases = sum(cases, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+This prepares the dataset for comparing overall trends between countries over time.
+
+# Analysis
+
+## Top 10 Countries by Total Cases and Deaths
+
+To better understand the global spread and impact of COVID-19, I want to compare the countries with the highest total number of confirmed cases and total deaths.  This helps highlight which countries had the largest outbreaks and which experienced the greatest loss of life.  
+
+```{r}
+# Find the top 10 countries by total confirmed cases
+top10_cases <- global_latest %>%
+  slice_max(cases, n = 10)
+```
+
+This chart displays the countries with the highest number of confirmed cases.  The countries are ordered so the largest appears at the top.  I used the format() function to convert the large numbers into a more readable format with commas (for example, “50,000,000” instead of “5e+07”).  This makes it easier to compare the case counts between countries at a glance.
+
+```{r}
+# Plot total cases with commas in the y-axis labels for readability
+ggplot(top10_cases, aes(x = reorder(Country_Region, cases), y = cases)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Countries by Total COVID-19 Cases",
+       x = NULL, y = "Total Cases") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme_minimal()
+```
+
+
+```{r}
+# Find the top 10 countries by total deaths
+top10_deaths <- global_latest %>%
+  slice_max(deaths, n = 10)
+```
+
+This second chart shows the countries with the highest total number of reported COVID-19 deaths.  Like the previous chart, the formatting makes it easier to read large numbers.  By comparing the two charts, I can see how some countries with a high number of cases also had high death counts, while others had fewer deaths despite large outbreaks.  This comparison may point to differences in healthcare systems, reporting accuracy, or other social and political factors.
+
+```{r}
+# Plot total deaths with formatted y-axis labels
+ggplot(top10_deaths, aes(x = reorder(Country_Region, deaths), y = deaths)) +
+  geom_col(fill = "darkred") +
+  coord_flip() +
+  labs(title = "Top 10 Countries by Total COVID-19 Deaths",
+       x = NULL, y = "Total Deaths") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme_minimal()
+```
+
+
+## Country Comparison by Deaths per Million
+
+To compare the impact of COVID-19 across countries, I calculate how many people died per million residents in each country.  This allows for a fairer comparison between small and large countries.
+
+```{r}
+# Load UID lookup with population
+uid_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_url)
+
+# Join population
+latest_date <- max(global_country_daily$date)
+
+global_latest <- global_country_daily %>%
+  filter(date == latest_date) %>%
+  rename(Country_Region = `Country/Region`) %>%
+  left_join(uid %>% 
+              group_by(Country_Region) %>%
+              summarise(Population = max(Population, na.rm = TRUE)),
+            by = "Country_Region") %>%
+  filter(!is.na(Population), Population > 0) %>%
+  mutate(deaths_per_million = 1e6 * deaths / Population)
+```
+
+Now that I’ve calculated deaths per million for each country, I want to visualize which countries were most affected.  In this step, I sort the data to find the top 10 countries with the highest death rates per million people.  Then, I create a horizontal bar chart to make the comparison easy to read.
+
+This code uses slice_max() to filter out the 10 countries with the highest deaths per million. 
+
+```{r}
+# Show top 10 countries by deaths per million
+top10 <- global_latest %>% 
+  slice_max(deaths_per_million, n = 10)
+
+ggplot(top10, aes(x = reorder(Country_Region, deaths_per_million), y = deaths_per_million)) +
+  geom_col(fill = "red") +
+  coord_flip() +
+  labs(title = "Top 10 Countries by Deaths per Million",
+       x = NULL, y = "Deaths per Million")
+```
+
+
+# Model
+## Do More Cases Mean More Deaths per Million?
+
+In this section, I want to explore whether countries with more COVID-19 cases also had more deaths per million people.  To investigate this, I use a linear regression model that predicts deaths per million using the number of total confirmed cases (in millions) as the predictor.
+
+Before modeling, I filter out any rows with missing or zero cases and create a new column that converts total cases into millions to make the scale easier to work with.
+
+```{r}
+model_df <- global_latest %>%
+  filter(cases > 0) %>%
+  mutate(cases_mill = cases / 1e6)
+
+model <- lm(deaths_per_million ~ cases_mill, data = model_df)
+summary(model)
+```
+
+Model output:
+ - Intercept = 1133.76
+ - Slope = 29.83
+ - p-value = 0.0012
+ - R-squared = 0.0528
+
+This model estimates that, on average, each additional 1 million reported COVID-19 cases is associated with an increase of about 29.8 deaths per million people.  The p-value for the slope is statistically significant (0.0012), which means the relationship is unlikely to be due to chance.  However, the R-squared value is very low (5.3 percent), so the model explains only a small portion of the variation in death rates between countries.  The residuals, which represent the differences between the actual and predicted values, also show a wide range.
+
+This suggests that while there is some relationship between cases and deaths, the model using raw values is not very strong.   It may be heavily influenced by outliers, such as countries with extremely high case counts like the United States or India.
+
+
+This scatterplot shows how deaths per million vary with total cases across countries.  Each point represents one country.  The red line shows the model’s best-fit prediction.  Most countries are clustered at the lower end of the x-axis, while a few points stretch far to the right.  These extreme values may be pulling the line away from the general trend and making the model less accurate for most countries.
+
+```{r}
+ggplot(model_df, aes(x = cases_mill, y = deaths_per_million)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(title = "Deaths per Million vs. Total Cases (in millions)",
+       x = "Total Cases (Millions)",
+       y = "Deaths per Million")
+```
+
+
+To reduce the effect of extreme values, I apply a logarithmic transformation to both total cases and deaths per million.  This compresses large numbers and helps reveal general patterns more clearly.  I add 1 to the deaths column to avoid any problems with taking the log of zero, which is undefined.
+```{r}
+model_df <- model_df %>%
+  mutate(log_cases = log10(cases),
+         log_deaths_per_million = log10(deaths_per_million + 1))  # +1 avoids log(0)
+
+log_model <- lm(log_deaths_per_million ~ log_cases, data = model_df)
+summary(log_model)
+```
+Model output:
+ - Intercept = 0.28
+ - Slope = 0.44
+ - p-value < 2.2e-16
+ - R-squared = 0.3976
+
+This model performs much better.  The slope of 0.44 means that a tenfold increase in total cases is associated with about a 2.75-fold increase in deaths per million.  This is because log10(10) equals 1, and 10 raised to the power of 0.44 is approximately 2.75.  The R-squared value is now almost 40 percent, so the model explains a much larger portion of the differences in death rates between countries.  The residuals are smaller and more evenly spread, which means the model predictions are closer to the actual values.
+
+By transforming the data, the model becomes more stable and more representative of the global pattern.
+
+
+This plot uses the log-transformed data and shows each country as a point.  Both axes now use a logarithmic scale, which spreads out the points and makes the overall trend easier to see.  The red line shows a strong positive relationship.  In general, countries with more total COVID-19 cases also experienced more deaths per million, although not in a perfectly linear way.
+
+```{r}
+ggplot(model_df, aes(x = log_cases, y = log_deaths_per_million)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(title = "Deaths per Million vs Total Cases (Log)",
+       x = "Total Cases (log10)",
+       y = "Deaths per Million (log10)")
+```
+# Bias
+
+This dataset may contains several forms of bias that can affect the accuracy and interpretation of the results.  Countries with more wealth tend to have better infrastructure for testing, reporting, and tracking public health data.  This means their numbers may appear more complete or more severe simply because more cases and deaths were detected. In contrast, lower income countries may have underreported cases due to limited testing or overwhelmed healthcare systems.  Political factors may also influence how data was reported or suppressed.  For example, some governments may have delayed reporting,  or selectively released information for political reasons.  Cultural factors, such as religious beliefs or attitudes toward science, and it could also affect reporting.
+
+From a personal standpoint, it’s easy to carry assumptions based on where you live or what media you consume.  For example, before analyzing the data, I assumed the United States had handled the pandemic relatively well.  However, the data shows that the U.S. had both high case numbers and a high death rate, which challenges that belief.
+
+
+# Conclusion
+
+This project explored how COVID-19 impacted countries around the world by analyzing global case and death data.  I used visualizations to compare the total number of cases and deaths, and calculated deaths per million to allow for fair comparisons between countries of different sizes.  I also built two models to examine whether countries with more cases also experienced higher death rates.  The second model provided a stronger and more stable relationship between the variables.  Through this analysis, I learned that while there is a positive association between cases and deaths, it is not consistent across all countries.  This highlights the importance of context when working with global data.  Finally, the data challenged some of my personal assumptions and showed how data science can help reveal patterns that may not be obvious at first.
