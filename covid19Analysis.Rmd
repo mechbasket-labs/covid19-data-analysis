@@ -67,6 +67,16 @@ global_country_daily <- global %>%
   )
 ```
 
+```{r}
+latest_date <- max(global_country_daily$date)
+
+global_latest <- global_country_daily %>%
+  filter(date == latest_date) %>%
+  rename(Country_Region = `Country/Region`)
+```
+
+
+
 This prepares the dataset for comparing overall trends between countries over time.
 
 # Analysis
@@ -125,11 +135,7 @@ uid_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/css
 uid <- read_csv(uid_url)
 
 # Join population
-latest_date <- max(global_country_daily$date)
-
-global_latest <- global_country_daily %>%
-  filter(date == latest_date) %>%
-  rename(Country_Region = `Country/Region`) %>%
+global_latest <- global_latest %>%
   left_join(uid %>% 
               group_by(Country_Region) %>%
               summarise(Population = max(Population, na.rm = TRUE)),
