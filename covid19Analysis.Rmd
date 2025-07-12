@@ -7,8 +7,8 @@ output: html_document
 
 Before doing any analysis, I need to load the R packages that make data cleaning and visualization easier.  The tidyverse package includes functions that help make working with data easier.  I also load the lubridate package, which is helpful for working with dates.
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```{r setup, include=TRUE, message=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE)
 library(tidyverse)
 library(lubridate)
 ```
